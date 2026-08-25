@@ -1,4 +1,4 @@
-\section{Prefill, decode, and where the FLOPs actually go}
+\section{Prefill, decode, and a cost model}
 \label{sec:cost}
 
 Completion caching decides whether to return a stored answer before, during, or after the serving model's forward pass. The cost of each option depends on what that pass actually does. This section accounts for the work on a public dense stand-in, Llama~3.1 70B~\citep{grattafiori2024llama}, whose width, depth, and grouped-query layout are published. A frontier Gemini-class model is wider and deeper; the same identities apply, with different $P$, $L$, and $d$.
@@ -12,7 +12,7 @@ A request $Q$ can incur three computations before any completion token is writte
 A byte-pair or SentencePiece tokenizer maps the UTF-8 string $Q$ to integer ids $t_1,\ldots,t_S\in\{1,\ldots,V\}$. This is a host-side finite-state walk: no Transformer weights, well under a millisecond on a short question, and irrelevant to the cost model.
 
 \paragraph{Retrieval embedder $e(Q)$.}
-A small dual encoder---MiniLM-class, on the order of $2\times 10^7$ parameters, or a larger e5/GTE-class model of a few times $10^8$---produces a single vector for nearest-neighbor lookup in the completion cache. It is a Transformer, just not the serving model. Its forward pass is two to three orders of magnitude cheaper than a 70B prefill (Table~\ref{tab:who}), so it can live on the host next to the request router. A provider that prefers to run it on a small accelerator does not change that comparison.
+A small dual encoder (MiniLM-class, on the order of $2\times 10^7$ parameters, or a larger e5/GTE-class model of a few times $10^8$) produces a single vector for nearest-neighbor lookup in the completion cache. It is a Transformer, but not the serving model. Its forward pass is two to three orders of magnitude cheaper than a 70B prefill (Table~\ref{tab:who}), so it can live on the host next to the request router. A provider that prefers to run it on a small accelerator does not change that comparison.
 
 \paragraph{Serving-model prefill.}
 The serving model reads the same token ids, gathers rows of its embedding table $E\in\mathbb{R}^{V\times d}$, and pushes the resulting $S\times d$ residual stream through all $L$ decoder blocks~\citep{pope2023efficiently}. Every linear layer participates. The pass writes a KV cache into HBM and, if generation is about to start, may apply the language-model head $W_{\mathrm{lm}}\in\mathbb{R}^{d\times V}$ to the last position to obtain first-token logits. A cache gate that reads the last-token hidden state $h(Q)\in\mathbb{R}^{d}$ does not need $W_{\mathrm{lm}}$.
@@ -34,7 +34,7 @@ One decode step & same 70B weights, one new token & GPU/TPU & $\sim 1.4\times 10
 \end{tabular}
 \end{table}
 
-The last two rows set the economics. Prefill of a 128-token question does about as much \emph{arithmetic} as 126 decode steps, because it applies the body weights to 128 positions at once. It does not take 126 times as long. Both phases are dominated by streaming the same $\sim$140\,GB of BF16 weights off HBM; prefill does it once, decode does it once per emitted token.
+The last two rows determine the relative cost. Prefill of a 128-token question does about as much arithmetic as 126 decode steps, because it applies the body weights to 128 positions at once. It does not take 126 times as long. Both phases are dominated by streaming the same $\sim$140\,GB of BF16 weights off HBM; prefill does it once, decode does it once per emitted token.
 
 \subsection{What the serving model does in prefill}
 \label{sec:cost-arch}
@@ -130,9 +130,9 @@ $T{=}256$ decode steps, $c$ from $S$ to $S{+}T$ & $3.57\times 10^{13}$ & $3.59\t
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:flops} is the FLOP picture. A 128-token prefill is 17.6\,TFLOP. A 256-token completion is about 36\,TFLOP. Counting FLOPs alone, decode is only twice prefill, and one might conclude that skipping decode is a $2\times$ win. That conclusion is wrong, because the two phases do not have the same arithmetic intensity.
+Table~\ref{tab:flops} is the FLOP picture. A 128-token prefill is 17.6\,TFLOP. A 256-token completion is about 36\,TFLOP. Counting FLOPs alone, decode is only twice prefill, which would suggest that skipping decode is a $2\times$ win. That comparison is misleading: the two phases do not have the same arithmetic intensity.
 
-\paragraph{Bytes, not FLOPs, set the clock.}
+\paragraph{Weight traffic, not FLOP count.}
 In BF16 the body plus embed plus head occupy
 \[
 B_w = 2P \approx 1.41\times 10^{11}\ \text{bytes}
@@ -167,9 +167,9 @@ TPU v6e & 920 TFLOP/s & 1840 TFLOP/s & 1.6 TB/s & 575 FLOP/B \\
 On an H100, $I^\star\approx 295$ in dense BF16 (Table~\ref{tab:hw}). Equation~\eqref{eq:intensity} then says:
 \begin{itemize}
   \item Decode is memory-bound until the decode batch approaches $B\approx 300$. A 70B KV cache will not let a single chip get there.
-  \item Prefill of a short question is also memory-bound at batch one: $S=128<295$. It becomes compute-bound once $BS\gtrsim 295$---for example $B=3$ at $S=128$, or $B=1$ at $S=512$.
+  \item Prefill of a short question is also memory-bound at batch one: $S=128<295$. It becomes compute-bound once $BS\gtrsim 295$, for example $B=3$ at $S=128$, or $B=1$ at $S=512$.
 \end{itemize}
-The slogan ``prefill is compute-bound, decode is memory-bound'' is true of long prompts and of batched prefills. It is not true of a lone 64-token question. What remains true, and what the cache exploits, is the sequentiality. Prefill pays the weight-stream \emph{once}. Decode pays it $T$ times.
+The usual claim that prefill is compute-bound and decode is memory-bound holds for long prompts and batched prefills. It does not hold for a lone 64-token question. The property the cache uses is sequentiality: prefill pays the weight-stream once, and decode pays it $T$ times.
 
 \paragraph{Time lower bounds.}
 A memory-bound kernel cannot beat $B_w/\mathrm{BW}$. A compute-bound kernel cannot beat $F/\mathrm{peak}$. Taking the max is the standard bound~\citep{pope2023efficiently}. For Llama~3.1 70B, batch one, BF16, on one H100,
@@ -205,17 +205,17 @@ CPU $e(Q)$ + ANN (typical) & \multicolumn{4}{c}{1--10\,ms, not on this chip} \\
 \end{tabular}
 \end{table}
 
-TPU v5p tells the same story with different constants. One chip has 96\,GB of HBM, so a BF16 70B must be sharded across at least two chips; an FP8 70B fits on one. Per-chip bandwidth is 2.8\,TB/s, slightly below H100, and $I^\star$ is lower (164), so short prefills are if anything \emph{more} memory-bound. TPU v5e (16\,GB, 0.82\,TB/s) is a prefill-friendly small chip and would never hold this model alone; v6e raises peak FLOPs faster than bandwidth ($I^\star=575$), which makes short prefills even more firmly a weight-stream. On every one of these parts, decode is the term a cache can delete.
+TPU v5p yields the same qualitative bound with different constants. One chip has 96\,GB of HBM, so a BF16 70B must be sharded across at least two chips; an FP8 70B fits on one. Per-chip bandwidth is 2.8\,TB/s, slightly below H100, and $I^\star$ is lower (164), so short prefills are if anything more memory-bound. TPU v5e (16\,GB, 0.82\,TB/s) is a prefill-friendly small chip and would never hold this model alone. TPU v6e raises peak FLOPs faster than bandwidth ($I^\star=575$), which makes short prefills even more firmly a weight-stream. On every one of these parts, decode is the term a cache can delete.
 
 A 700\,W H100 burning 42\,ms for prefill spends about 30\,J. The same chip burning 5.4\,s for an FP8 256-token decode spends about 3.8\,kJ. Energy follows chip-time.
 
-\paragraph{The retrieval embedder, for scale.}
+\paragraph{Retrieval embedder cost.}
 MiniLM-L6 has $P_e\approx 2.3\times 10^7$ parameters~\citep{wang2020minilm}. Its forward cost $2P_e S\approx 5.8\times 10^9$ FLOPs at $S=128$ is $3000\times$ smaller than the 70B prefill. A 335M embedder is still $\sim 200\times$ smaller. Either one plus an HNSW probe of $10^7$--$10^9$ vectors is a few milliseconds on the host~\citep{malkov2018hnsw}. Returning a 256-token cached string is a few kilobytes; inside a datacenter that is sub-millisecond. These terms matter for latency tails. They do not appear in the accelerator bill.
 
 \subsection{Implications for completion caching}
 \label{sec:cost-method}
 
-Table~\ref{tab:times} says that at chat lengths, decode is 95--99.6\% of serving-model accelerator time. A hit that prefills $Q$, inspects $h(Q)$, and returns $C^\star$ therefore discards almost all of the request's chip-time. A more precise gate that still skips decode is cheap: the extra prefill costs on the order of one decode token. The host-side embedder $e(Q)$ is cheaper still, and is the only way to leave the serving accelerators untouched. That last property matters when the fleet is prefill-saturated, or when prefill and decode are disaggregated onto different machines~\citep{zhong2024distserve}. In a disaggregated stack a prefill-then-accept hit still occupies a prefill chip and still frees a decode chip. Decode chips scale with $T$ and are hard to keep at high utilization; freeing them is the point.
+Table~\ref{tab:times} says that at chat lengths, decode is 95--99.6\% of serving-model accelerator time. A hit that prefills $Q$, inspects $h(Q)$, and returns $C^\star$ therefore discards almost all of the request's chip-time. A more precise gate that still skips decode is cheap: the extra prefill costs on the order of one decode token. The host-side embedder $e(Q)$ is cheaper still, and is the only way to leave the serving accelerators untouched. That last property matters when the fleet is prefill-saturated, or when prefill and decode are disaggregated onto different machines~\citep{zhong2024distserve}. In a disaggregated stack a prefill-then-accept hit still occupies a prefill chip and still frees a decode chip. Decode chips scale with $T$ and are hard to keep at high utilization; the cache's value is the time it frees on those chips.
 
 Those ratios give the three tiers of Section~\ref{sec:method} a cost:
 \begin{enumerate}
@@ -223,4 +223,4 @@ Those ratios give the three tiers of Section~\ref{sec:method} a cost:
   \item \textbf{Prefill tier.} Otherwise prefill $Q$, obtain $h(Q)$, and gate on the serving model's own state. On accept, discard the KV cache and return $C_i$. Accelerator time: one weight-stream.
   \item \textbf{Decode tier.} On reject, continue from the KV cache just written and generate $C(Q)$, optionally drafting from $C_i$. Accelerator time: the usual $T$ streams. Insert $(Q,C(Q))$ if the request was cache-eligible.
 \end{enumerate}
-Long-context and unique-document requests stay in the decode tier, and often should not be inserted: their cost is prefill, their $Q$ will not recur, and $h(Q)$ represents a document the next user does not have. Context-bound intents (location, account, live search) are not portable completions; Section~\ref{sec:method-fill} reuses a tool plan rather than another user's $C_i$. The napkin math is for portable decode-skips and for bound plans that avoid decode---short $Q$, longish $C$, repeated intents---where $T$ weight-streams are the thing worth not paying.
+Long-context and unique-document requests stay in the decode tier, and often should not be inserted: their cost is prefill, their $Q$ will not recur, and $h(Q)$ represents a document the next user does not have. Context-bound intents (location, account, live search) are not portable completions; Section~\ref{sec:method-fill} reuses a tool plan rather than another user's $C_i$. The napkin math is for portable decode-skips and for bound plans that avoid decode (short $Q$, longish $C$, repeated intents), where $T$ weight-streams are the cost a hit avoids.
