@@ -1,7 +1,7 @@
 \section{Completion caching}
 \label{sec:method}
 
-Section~\ref{sec:cost} priced the three places a request can leave the serving path: after a host-side retrieval, after a serving-model prefill, or after a full decode. This section specifies the policy that chooses among them. The objective is decode-skips subject to a bound on serving an unacceptable answer, not query similarity. An answer can be unacceptable because it is about the wrong thing, or because it is about the right thing for someone else.
+Section~\ref{sec:cost} priced the three places a request can leave the serving path: after a host-side retrieval, after a serving-model prefill, or after a full decode. This section specifies the policy that chooses among them. The objective is the number of decode-skips, subject to a bound on serving an unacceptable answer. An answer is unacceptable if it addresses the wrong question, or if it is correct only under another user's context.
 
 \subsection{Cache records and the serve path}
 \label{sec:method-serve}
@@ -13,7 +13,7 @@ A completion cache is a set of records
 \]
 $C_i=C(Q_i)$ at insertion; $e_i=e(Q_i)$ is the retrieval embedding; $h_i=h(Q_i)$ is the serving model's last-token prefill state when it was stored (optional). $[Q_i]$ is a query equivalence-class representative (Section~\ref{sec:method-bind}). $\kappa_i$ is a binding class: $\mathsf{portable}$, $\mathsf{bound}$, or $\mathsf{ineligible}$. For bound records, $\pi_i$ is a tool plan (a program with holes) and $\mathcal{T}_i$ is a completion template with the same holes. Metadata $m_i$ holds insertion time, model version, TTL, and an optional quality score.
 
-Write $\mathcal{A}(Q,C)$ for the (unobserved) predicate that $C$ is an acceptable reply to $Q$. Acceptability is not a property of strings alone. It requires compatible \emph{intent} and compatible \emph{context}: the stored answer must be one this user, at this time and place, could have been given. Algorithm~\ref{alg:serve} is the serve path. Figure~\ref{fig:serve} is the same policy as a control flow.
+Write $\mathcal{A}(Q,C)$ for the (unobserved) predicate that $C$ is an acceptable reply to $Q$. Acceptability depends on intent and on context: the stored answer must be one this user, at this time and place, could have been given. The serve path is Algorithm~\ref{alg:serve}; Figure~\ref{fig:serve} shows the control flow.
 
 \begin{algorithm}[t]
 \caption{Serve a query against a completion cache.}
@@ -30,7 +30,7 @@ Write $\mathcal{A}(Q,C)$ for the (unobserved) predicate that $C$ is an acceptabl
 \EndIf
 \If{$\exists\, r\in\mathcal{D}$ with $[Q_r]=[Q]$, fresh, same model, $\kappa_r=\mathsf{portable}$}
   \If{$\mathrm{CheapGate}(Q,u,r)=\textsc{accept}$}
-    \State \Return $C_r$ \Comment{still gated: identical text is not a license}
+    \State \Return $C_r$ \Comment{gated even on exact text}
   \EndIf
 \EndIf
 \State $e_Q \gets e(Q)$; \quad $\mathcal{N} \gets \mathrm{kNN}(e_Q,\mathcal{D};k)$
@@ -53,16 +53,14 @@ Write $\mathcal{A}(Q,C)$ for the (unobserved) predicate that $C$ is an acceptabl
 \begin{figure}[t]
 \centering
 \resizebox{\textwidth}{!}{\input{figures/serve-path}}
-\caption{Serve path. Binding class is decided before any completion is reused. Portable queries may return a cached $C^\star$ after a cheap gate, including on an equivalence-class hash. Bound queries replay a tool plan into a template under \emph{this} user's context. Ineligible queries decode and are not stored. \textsc{Defer} spends a serving-model prefill to decide again in $h$-space.}
+\caption{Serve path. $\mathrm{BindClass}$ runs before any completion is reused, from the tool list and from whether per-user agent memory is read. Portable queries may return a cached $C^\star$ after $\mathrm{CheapGate}$, including on an equivalence-class hash. Bound queries replay a tool plan into a template under this user's context. Ineligible queries decode and are not stored. \textsc{Defer} spends a serving-model prefill to decide again in $h$-space.}
 \label{fig:serve}
 \end{figure}
 
-Exact string match is therefore not itself a return path; it is at most a candidate, and only after $n(\cdot)$ has folded trivial surface variation and $\mathrm{BindClass}$ has declared the intent portable. Retrieval still returns a shortlist of $k>1$ records. The gate remains ternary on portable traffic: \textsc{Accept} is calibrated to keep the served set inside $\mathcal{A}$; \textsc{Reject} is the decode we would have run anyway; \textsc{Defer} spends a prefill, which Section~\ref{sec:cost} priced at about one decode token.
+An exact string match is a candidate only after $n(\cdot)$ has folded trivial surface variation and $\mathrm{BindClass}$ has returned $\mathsf{portable}$. Retrieval still returns a shortlist of $k>1$ records. On portable traffic the gate is ternary: \textsc{Accept} is calibrated so that served completions lie in $\mathcal{A}$; \textsc{Reject} falls through to the decode that would have run anyway; \textsc{Defer} spends a prefill, which Section~\ref{sec:cost} priced at about one decode token.
 
 \subsection{Equivalence classes and context binding}
 \label{sec:method-bind}
-
-Query equivalence and answer reuse are different decisions.
 
 \paragraph{Equivalence.}
 Write $n(Q)$ for a representative of the query's equivalence class $[Q]$. The map $n$ is a stack, cheapest first:
@@ -71,27 +69,35 @@ Write $n(Q)$ for a representative of the query's equivalence class $[Q]$. The ma
   \item A small, closed rewrite list: contractions (\emph{what's}$\mapsto$\emph{what is}), a handful of locative paraphrases (\emph{near me} / \emph{around me} / \emph{nearby} / \emph{close by}).
   \item Optional learned equivalence: a classifier or a very conservative embedding threshold trained on labeled paraphrase pairs, used only to merge $[Q]$, never to authorize serving $C_i$.
 \end{enumerate}
-Thus ``What is the best Italian restaurant near me'', the same sentence with a question mark, ``what's the best Italian restaurant near me'', and ``what are the best Italian restaurants around me'' can share a class. That merge is useful for lookup. It does not authorize reuse of a completion. The restaurant class is a single intent whose answer depends on who asked.
+Thus ``What is the best Italian restaurant near me'', the same sentence with a question mark, ``what's the best Italian restaurant near me'', and ``what are the best Italian restaurants around me'' can share a class. The shared class is an index key. Serving $C_i$ still requires $\mathrm{BindClass}$ and the gate, because the restaurant class is a single intent whose answer depends on who asked.
 
 \paragraph{Binding.}
-$\mathrm{BindClass}(Q,u)$ assigns $\kappa\in\{\mathsf{portable},\mathsf{bound},\mathsf{ineligible}\}$. Portable intents have answers that do not depend on the requester (how to reverse a list in Python; what RMSNorm is). Bound intents have a stable \emph{shape} and a per-request \emph{payload}: location, account, calendar, the open document, a live index. Ineligible intents have neither a reusable answer nor a reusable shape (a unique pasted file with no tool schema; a jailbreak; a request the provider has chosen not to cache).
+$\mathrm{BindClass}(Q,u)$ assigns $\kappa\in\{\mathsf{portable},\mathsf{bound},\mathsf{ineligible}\}$. The assignment is computed from the request's tool list and from whether the provider's per-user agent memory is read.
 
-The classifier can start as a lexicon and a few regular expressions (``near me'', ``my'', ``I have'', ``today'', ``this file'', session identifiers in the prompt) and can later become a small learned model. The cost of running it is in the same budget as $e(Q)$: host-side, milliseconds. The cost of getting it wrong in the portable direction is serving one user another user's restaurant, medical detail, or file. So $\mathrm{BindClass}$ is conservative toward $\mathsf{bound}$ and $\mathsf{ineligible}$. A false $\mathsf{bound}$ still skips decode if a tool plan exists; a false $\mathsf{portable}$ assignment is unsafe.
+If the request does not invoke tools and does not read per-user agent memory, the completion does not depend on who asked. $\mathrm{BindClass}$ returns $\mathsf{portable}$, and a stored $C_i$ may be served. How-to questions, definitions, and other closed queries with no tool use fall here.
+
+If the request does invoke tools, a second check inspects the tool names and, when available, their arguments for user-specific or otherwise non-universal context: location, weather, calendar, account state, the open document, a live local index. Presence of such a dependency yields $\mathsf{bound}$: the tool plan and the wrap may be reused, the filled answer may not. Tools that do not introduce that dependency (a calculator, a public documentation lookup) do not by themselves force $\mathsf{bound}$.
+
+A read of per-user agent memory is treated as a non-universal context source even when no explicit tool call appears in the trace. A completion produced under another user's memory is not an acceptable reply to $Q$. If the rest of the request has a reusable tool plan, the record can still be $\mathsf{bound}$; otherwise it is $\mathsf{ineligible}$.
+
+Ineligible intents have neither a reusable answer nor a reusable plan: a unique pasted file with no tool schema, a jailbreak, or a request the provider has chosen not to cache.
+
+At insertion, $\kappa_i$ is taken from the generation trace (tools invoked, memory read, whether any tool result was non-universal). At serve time, $\mathrm{BindClass}(Q,u)$ predicts that label from $Q$, $u$, and any tool schema already stored for $[Q]$. The predictor can start as a lexicon and regular expressions on $Q$ and on the tool list (``near me'', ``my'', ``I have'', ``today'', ``this file'', session identifiers) and can later become a small learned model. Its cost is in the same budget as $e(Q)$: host-side, milliseconds. A false $\mathsf{portable}$ assignment serves one user another user's restaurant, medical detail, or file, so the predictor is conservative toward $\mathsf{bound}$ and $\mathsf{ineligible}$. A false $\mathsf{bound}$ still skips decode if a tool plan exists.
 
 A stored record carries its own $\kappa_i$. A portable completion is reusable only for a portable query in the same $[Q]$ (or a pooling accept, Section~\ref{sec:method-pool}). A bound record exports $\pi_i$ and $\mathcal{T}_i$, not $C_i$.
 
 \subsection{Gating}
 \label{sec:method-gate}
 
-A false accept serves the wrong answer. A false reject only costs a decode. Gates are therefore conservative by construction: we bound $\Pr(\neg\mathcal{A}\mid \textsc{accept})$ and let hit rate fall where it must. $\mathrm{CheapGate}$ on an equivalence-class hash is the same doctrine at lower feature cost: binding class, freshness, model version, and a small context check against $u$. Identical tokens do not skip that gate.
+A false accept serves the wrong answer. A false reject only costs a decode. Gates therefore constrain $\Pr(\neg\mathcal{A}\mid \textsc{accept})$; hit rate is whatever remains after that constraint. $\mathrm{CheapGate}$ is the hash-path filter: binding class, freshness, model version, and a check against $u$. Matching tokens are not sufficient to accept.
 
-Let $x_Q$ be the query representation in the current space ($e_Q$ at the retrieval tier, $h_Q$ at the prefill tier) and let $\mathcal{N}=\{r_i\}_{i=1}^{k}$ be the shortlist. The gate $g$ reads $x_Q$, the matching fields of $\mathcal{N}$, and $u$, and returns $(\hat C, d)$ with $d\in\{\textsc{accept},\textsc{defer},\textsc{reject}\}$. We do not treat $\cos(x_Q,x_i)$ as $g$. Cosine on raw embeddings is a proxy for ``these questions are about the same thing,'' and that is the France/Spain failure mode from Section~\ref{sec:intro-prior}. The features we do use are:
+Let $x_Q$ be the query representation in the current space ($e_Q$ at the retrieval tier, $h_Q$ at the prefill tier) and let $\mathcal{N}=\{r_i\}_{i=1}^{k}$ be the shortlist. The gate $g$ reads $x_Q$, the matching fields of $\mathcal{N}$, and $u$, and returns $(\hat C, d)$ with $d\in\{\textsc{accept},\textsc{defer},\textsc{reject}\}$. Raw-embedding cosine scores topical relatedness, which is the France/Spain failure mode from Section~\ref{sec:intro-prior}. The features used by $g$ are:
 
 \begin{itemize}
   \item \textbf{Binding compatibility.} If $\kappa$ or $\kappa_i$ is not $\mathsf{portable}$, $g$ cannot accept $C_i$. Bound shortlists are handed to Section~\ref{sec:method-fill}.
   \item \textbf{Projected residual} $\rho$ and projected neighbor $i^\star$ from top-$k$ projective pooling (Section~\ref{sec:method-pool}). A small residual means $Q$ lies in the local paraphrase span of $\mathcal{N}$. A large residual means the shortlist is a topical near-miss.
   \item \textbf{Completion consensus} $\gamma$: do the $k$ stored answers agree with each other? A mixed shortlist is a collision of intents that happen to sit nearby in representation space.
-  \item \textbf{Freshness and version.} A record with an expired TTL, or a model version other than the one now serving, cannot be accepted as $C_i$. It may still donate a draft or a template.
+  \item \textbf{Freshness and version.} A record with an expired TTL, or a model version other than the one now serving, cannot be accepted as $C_i$. It may still be used as a draft or a template.
 \end{itemize}
 
 A simple, deployable $g$ on portable traffic is a threshold rule on $(\rho,\gamma)$ after those hard filters:
@@ -108,7 +114,7 @@ d
       & \text{otherwise, and only at the retrieval tier.}
   \end{cases}
 \end{equation}
-At the prefill tier there is no further deferral: \textsc{defer} collapses to \textsc{reject} and decode starts from the KV cache just written. The two thresholds $\tau_\rho^{\mathrm{hi}}<\tau_\rho^{\mathrm{lo}}$ leave a band in which $e$-space is unsure and a prefill in $h$-space is justified. Both $\tau$ and $\tau_\gamma$ are calibrated offline on labeled \((\text{paraphrase},\,\text{near-miss},\,\text{bound})\) triples so that the empirical false-accept rate stays under a chosen $\varepsilon$ (for example $10^{-3}$). A learned classifier on the same features is a drop-in replacement for~\eqref{eq:gate}; the calibration target does not change.
+At the prefill tier there is no further deferral: \textsc{defer} collapses to \textsc{reject} and decode starts from the KV cache just written. The two thresholds $\tau_\rho^{\mathrm{hi}}<\tau_\rho^{\mathrm{lo}}$ leave a band in which $e$-space is unsure and a prefill in $h$-space is justified. Both $\tau$ and $\tau_\gamma$ are calibrated offline on labeled \((\text{paraphrase},\,\text{near-miss},\,\text{bound})\) triples so that the empirical false-accept rate stays under a chosen $\varepsilon$ (for example $10^{-3}$). A learned classifier on the same features can replace~\eqref{eq:gate}; the calibration target does not change.
 
 The served completion on \textsc{accept} is the output of the pooling rule below, not necessarily the nearest neighbor.
 
@@ -135,7 +141,7 @@ i^\star
 Distances in the span compare phrasing; the residual in~\eqref{eq:residual} is what decides whether that comparison is about the same question.
 
 \paragraph{Consensus.}
-Let $\phi(C_i)$ be a cheap embedding of the stored completions (the same $e$, or even a bag-of-tokens hash). Cluster $\{\phi(C_i)\}$ with a single-linkage cutoff. Write $\gamma$ for the fraction of the shortlist that lands in the largest cluster, and write $\mathcal{N}_{\mathrm{maj}}$ for that cluster. If $\gamma$ is small, the neighborhood is mixed: the local span includes more than one answer, and accepting $C_{i^\star}$ is accepting a coin flip between them. Those shortlists never accept at the retrieval tier. They may still accept at the prefill tier, where $h(Q)$ can break the tie, or they fall through to decode.
+Let $\phi(C_i)$ be a cheap embedding of the stored completions (the same $e$, or even a bag-of-tokens hash). Cluster $\{\phi(C_i)\}$ with a single-linkage cutoff. Write $\gamma$ for the fraction of the shortlist that lands in the largest cluster, and write $\mathcal{N}_{\mathrm{maj}}$ for that cluster. If $\gamma$ is small, the neighborhood is mixed: the local span includes more than one answer, and accepting $C_{i^\star}$ would return an arbitrary member of that set. Those shortlists never accept at the retrieval tier. They may still accept at the prefill tier, where $h(Q)$ can break the tie, or they fall through to decode.
 
 \paragraph{The pooled completion.}
 On \textsc{accept},
@@ -148,14 +154,14 @@ C^\star
   = \arg\min_{r_j\in\mathcal{N}_{\mathrm{maj}}}
       \bigl\|P(x_Q-\bar x)-P(x_j-\bar x)\bigr\|,
 \end{equation}
-breaking remaining ties by freshness and stored quality. This is selection, not generation: we do not fuse portable text. Fusion of portable completions is unsafe in a conservative cache. The pooling is of evidence: the shortlist votes on whether an acceptable answer is present, and on which stored answer to serve.
+breaking remaining ties by freshness and stored quality. We return one stored completion from the majority cluster. Blending portable completions would emit text that no logged generation produced. The shortlist is used to decide whether an acceptable stored answer is present and which one to return.
 
 The constants $k$ and $r$ are set by two failure modes. If $k$ is too small, the estimated span $U_r$ is noisy and $\rho$ is meaningless. If $k$ is too large, the shortlist reaches into neighboring intents, $\gamma$ drops, and the gate defers or rejects. If $r$ is too large, $P$ becomes a near-identity and $\rho$ cannot see a near-miss. The useful regime is a small neighborhood that is still large enough to estimate a two- or three-dimensional paraphrase plane: $k\in[8,32]$, $r\in\{2,3\}$ is the intended operating point. Those constants are for the designer to sweep; they are not claims about a deployed system.
 
 \subsection{Bound queries: tool plans, templates, and non-AR fill-in}
 \label{sec:method-fill}
 
-A bound intent has a reusable program and a reusable presentation shape. Caching $C_i$ copies another user's result into this user's thread; caching the program does not.
+A bound intent has a reusable program and a reusable presentation shape. Caching $C_i$ copies another user's result into this user's thread. The cached object is the program, not the filled answer.
 
 \paragraph{Tool plans.}
 When a bound request is generated the first time, the serving model typically emits one or more tool calls (maps search, catalog lookup, calendar, code execution) and then a natural-language wrap. $\mathrm{MaybeInsert}$ stores, in addition to or instead of $C_i$, a plan $\pi$: a sequence of tool names and argument \emph{templates} whose holes are bound at serve time from $u$ (user coordinates, account id, ``now'', the active document). Replaying $\pi(u)$ is ordinary RPC, not decode. The restaurant class becomes $\texttt{places.search}(\texttt{cuisine=italian},\,\texttt{near}=u.\mathrm{geo})$, not ``try Mario's on Oak Street.''
@@ -170,14 +176,14 @@ C
 string interpolation, not generation. If several templates in the class disagree, take the majority skeleton or fall through to decode. Consensus here is consensus of \emph{shapes}, not of filled-in names.
 
 \paragraph{Non-autoregressive fill-in.}
-Interpolation is brittle when the wrap is not quite a template: a slightly different tone, a hedge, an extra clause. A small conditional generator that maps $(\mathcal{T},\,\pi(u))$ to a surface string, trained offline on logged (template, slots, completion) triples, can sit in that gap. Discrete or latent diffusion models for text are one candidate: they are not token-serial in the serving-model sense, and they can be run on a cheap device next to the router. We treat this as an optional renderer, not as a second chatbot. It does not see $u$ except through the already-fetched slots; it is not authorized to invent a restaurant. If a confidence check on the renderer fails, the request falls through to serving-model decode.
+Interpolation is brittle when the wrap is not quite a template: a slightly different tone, a hedge, an extra clause. A small conditional generator that maps $(\mathcal{T},\,\pi(u))$ to a surface string, trained offline on logged (template, slots, completion) triples, can sit in that gap. Discrete or latent diffusion models for text are one candidate: they are not token-serial in the serving-model sense, and they can be run on a cheap device next to the router. The renderer is optional. It sees $u$ only through the already-fetched slots, and it is not permitted to invent a restaurant. If a confidence check on the renderer fails, the request falls through to serving-model decode.
 
-$\mathrm{FillBound}$ is therefore a fourth leave-point, cheaper than prefill when the plan hits and still conservative: the only tokens we reuse are those that do not mention a person, and the only facts we insert were fetched for this request.
+$\mathrm{FillBound}$ is a fourth exit from the serving path, cheaper than prefill when the plan hits. The only reused tokens are those that do not mention a person, and the only inserted facts were fetched for this request.
 
 \subsection{Decode, draft, and insert}
 \label{sec:method-miss}
 
-On a portable miss, the serving model generates $C(Q)$ as usual. Two things are still left to decide: whether the retrieved completion can cheapen that generate, and what to write back to $\mathcal{D}$.
+On a portable miss, the serving model generates $C(Q)$ as usual. Two decisions remain: whether the retrieved completion can cheapen that generate, and what to write back to $\mathcal{D}$.
 
 \paragraph{Speculative draft.}
 If $\mathrm{PoolAndGate}$ produced a $C^\star$ that it would not accept as an answer (a high cosine with a large residual, or a mixed shortlist), $C^\star$ is still a plausible draft. Retrieval-based speculative decoding~\citep{he2024rest,leviathan2023fast} verifies a draft in one forward pass per chunk and keeps a prefix that matches the model's own distribution. Using a cached completion as that draft costs no extra model and cannot change the output. A rejected hit therefore becomes a partial decode-skip rather than a full miss.
@@ -185,4 +191,4 @@ If $\mathrm{PoolAndGate}$ produced a $C^\star$ that it would not accept as an an
 \paragraph{Insertion.}
 $\mathrm{MaybeInsert}$ is binding-class-specific. Portable, short-to-medium, non-document $Q$ store $(Q,C,e,h,[Q],\mathsf{portable},m)$. Bound $Q$ store $[Q]$, $\kappa=\mathsf{bound}$, the tool plan $\pi$, and the template $\mathcal{T}$; they do not store a filled $C$ as a reusable answer. Ineligible $Q$ store nothing. Time-sensitive portable facts (sports scores, prices) get a TTL or they are reclassified as bound and given a refresh tool. Model version is part of the key for $h_i$ and $C_i$; $e_i$, $[Q]$, $\pi$, and $\mathcal{T}$ can be rebuilt or kept across a bump. Eviction is ordinary: LRU or LFU on the retrieval index, with a floor for records that have already paid for themselves in decode-skips.
 
-The insert rule is as important as the gate. A cache that stores other users' locations and unique documents will have high occupancy and an unsafe hit rate. The cost model in Section~\ref{sec:cost} is for portable decode and for bound plans that avoid decode; that is the population we store.
+Storing other users' locations and unique documents raises occupancy and makes hits unsafe. The cost model in Section~\ref{sec:cost} applies to portable decode-skips and to bound plans that avoid decode. Those are the records $\mathrm{MaybeInsert}$ stores.
