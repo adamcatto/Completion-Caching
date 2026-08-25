@@ -1,5 +1,3 @@
-.agents/
-.cursor/
 .env
 .env.local
 .env.development.local

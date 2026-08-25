@@ -1,0 +1,17 @@
+---
+description: Paper-writing workflow for the Completion-Caching design manuscript
+globs: manuscript/**,notes.md
+alwaysApply: false
+---
+
+# Manuscript writing
+
+This repo is a **design / systems paper** (napkin math, no deployment yet). When editing `manuscript/` or `notes.md`:
+
+1. Read and follow `.agents/skills/completion-caching-paper/SKILL.md` first.
+2. Load sibling skills from `.agents/skills/` on demand — do not invent citations, hit rates, or benchmark numbers.
+3. For LaTeX papers always use BibTeX citations that can be cross-referenced to an existing paper like on Google Scholar. Cite with `\cite` keys into `manuscript/refs.bib`; never hand-type author–year in the `.tex`.
+4. Keep vocabulary consistent: completion caching, acceptability, prefill, decode, gating, top-k projective pooling.
+5. Run `verify-citations` after changing `manuscript/refs.bib`; run `verify-claims` before treating a section as finished.
+
+For a full editing session, start Agent chat in **Custom Mode** with `/completion-caching-paper` (Option+Enter on Mac, Alt+Enter on Windows).
