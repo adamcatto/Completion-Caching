@@ -1,0 +1,42 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[american]{babel}
+\usepackage{csquotes}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage[style=apa,backend=biber,natbib=true]{biblatex}
+\addbibresource{refs.bib}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,fit,backgrounds,decorations.pathreplacing}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{float}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=blue!50!black,
+  urlcolor=blue!50!black
+}
+
+\title{Completion Caching:\\Reusing LLM Answers at Provider Scale}
+\author{Adam Catto}
+\date{}
+
+\begin{document}
+\maketitle
+
+\input{sections/01-introduction}
+\input{sections/02-cost-model}
+\input{sections/03-method}
+
+% \input{sections/04-savings}
+
+\printbibliography
+
+\end{document}

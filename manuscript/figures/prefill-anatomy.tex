@@ -1,0 +1,131 @@
+% Prefill anatomy. Invoked via \input inside a resizebox.
+\definecolor{cpuFill}{HTML}{F6F0E6}
+\definecolor{cpuLine}{HTML}{7A6238}
+\definecolor{gpuFill}{HTML}{EAF0F6}
+\definecolor{gpuLine}{HTML}{1C4A73}
+\definecolor{card}{HTML}{FFFFFF}
+\definecolor{qkv}{HTML}{1C4A73}
+\definecolor{attnC}{HTML}{8B2E2E}
+\definecolor{ffnC}{HTML}{1A5E5E}
+\definecolor{kvC}{HTML}{7A5C12}
+\definecolor{mute}{HTML}{5A6270}
+
+\begin{tikzpicture}[
+  font=\sffamily\scriptsize,
+  >=Stealth,
+  every node/.style={align=center},
+  panel/.style={draw, rounded corners=2.5pt, inner sep=0pt},
+  card/.style={draw, rounded corners=1.6pt, fill=card, inner sep=3.4pt, minimum height=0.78cm},
+  tinybox/.style={draw, rounded corners=1pt, fill=card, inner sep=2pt, font=\sffamily\tiny, minimum height=0.52cm},
+]
+
+% ========================= CPU =========================
+\node[panel, fill=cpuFill, draw=cpuLine, minimum width=2.7cm, minimum height=7.15cm]
+  (cpu) at (1.35,-3.55) {};
+\node[font=\sffamily\footnotesize\bfseries, text=cpuLine]
+  at (1.35,-0.28) {Host (CPU)};
+
+\node[card, draw=cpuLine, text width=2.15cm] (qstr) at (1.35,-1.15)
+  {query string $Q$\\[-1pt]{\tiny UTF-8 bytes}};
+\node[card, draw=cpuLine, text width=2.15cm] (tokn) at (1.35,-2.25)
+  {tokenizer\\[-1pt]{\tiny BPE / SentencePiece}};
+\node[card, draw=cpuLine, text width=2.15cm] (ids) at (1.35,-3.35)
+  {token ids\\[-1pt]{\tiny $t_1,\ldots,t_S\in\{1..V\}$}};
+\node[card, draw=cpuLine, dashed, text width=2.15cm] (retr) at (1.35,-4.85)
+  {retrieval embedder $e(Q)$\\[-1pt]{\tiny separate small model}};
+\node[text=mute, font=\sffamily\tiny, text width=2.25cm] at (1.35,-6.05)
+  {$P_e\sim 10^7$--$10^8$. Used for ANN lookup, not for $h(Q)$.};
+
+\draw[->, cpuLine, thick] (qstr) -- (tokn);
+\draw[->, cpuLine, thick] (tokn) -- (ids);
+\draw[->, cpuLine] (ids) -- (retr);
+
+% ========================= GPU =========================
+\node[panel, fill=gpuFill, draw=gpuLine, minimum width=13.55cm, minimum height=7.15cm]
+  (gpu) at (9.55,-3.55) {};
+\node[font=\sffamily\footnotesize\bfseries, text=gpuLine]
+  at (9.55,-0.28) {Accelerator (GPU / TPU) --- serving-model prefill};
+
+% token ids
+\foreach \i/\lab in {0/$t_1$,1/$t_2$,2/$t_3$,3/$\cdots$,4/$t_S$} {
+  \node[tinybox, draw=gpuLine, minimum width=0.48cm] (tk\i) at (4.15+0.62*\i,-1.15) {\lab};
+}
+\node[text=gpuLine, font=\sffamily\tiny, anchor=east] at (3.82,-1.15) {ids};
+
+\draw[->, gpuLine, very thick]
+  (ids.east) -- ++(0.22,0) |- (tk0.west);
+
+% embedding
+\node[card, draw=gpuLine, text width=3.55cm] (emb) at (5.35,-2.20)
+  {embedding lookup $E\in\mathbb{R}^{V\times d}$\\[-1pt]
+   {\tiny gather, not a GEMM}};
+\draw[->, gpuLine, thick] (tk2.south) -- (emb.north);
+
+\node[card, draw=gpuLine!60, text width=3.55cm] (x0) at (5.35,-3.25)
+  {$X^{(0)}\in\mathbb{R}^{S\times d}$\\[-1pt]
+   {\tiny $S$ residual streams, in parallel}};
+\draw[->, gpuLine] (emb) -- (x0);
+
+% layer card
+\node[panel, fill=white, draw=gpuLine, minimum width=7.85cm, minimum height=4.55cm]
+  (layer) at (11.55,-3.55) {};
+\node[font=\sffamily\scriptsize\bfseries, text=gpuLine]
+  at (11.55,-1.42) {one decoder block, repeated $L$ times};
+
+\draw[->, gpuLine, thick] (x0.east) -- (layer.west);
+
+% attention column
+\node[tinybox, draw=qkv, text width=2.55cm] (rmsa) at (9.55,-2.15) {RMSNorm};
+\node[tinybox, draw=qkv, text width=2.55cm] (qkvn) at (9.55,-2.85)
+  {$W_Q,W_K,W_V$ \ + RoPE\\[-1pt]GQA: $n_{\mathrm{kv}}=n_q/8$};
+\node[tinybox, draw=attnC, text width=2.55cm] (att) at (9.55,-3.65)
+  {causal attention\\[-1pt]$QK^\top$, softmax, $AV$};
+\node[tinybox, draw=qkv, text width=2.55cm] (wo) at (9.55,-4.45)
+  {$W_O$ \ + residual};
+
+\draw[->, qkv] (rmsa) -- (qkvn);
+\draw[->, qkv] (qkvn) -- (att);
+\draw[->, attnC] (att) -- (wo);
+
+% ffn column
+\node[tinybox, draw=ffnC, text width=2.15cm] (rmsf) at (12.05,-2.15) {RMSNorm};
+\node[tinybox, draw=ffnC, text width=2.15cm] (ffn) at (12.05,-3.20)
+  {SwiGLU FFN\\[-1pt]$W_{\mathrm{gate}},W_{\mathrm{up}},W_{\mathrm{down}}$};
+\node[tinybox, draw=ffnC, text width=2.15cm] (res2) at (12.05,-4.45)
+  {+ residual $\to X^{(\ell)}$};
+
+\draw[->, ffnC] (rmsf) -- (ffn);
+\draw[->, ffnC] (ffn) -- (res2);
+\draw[->, gpuLine] (wo.east) -- ++(0.16,0) |- (rmsf.west);
+
+% causal mask
+\begin{scope}[shift={(14.05,-2.05)}]
+  \node[font=\sffamily\tiny\bfseries, text=attnC] at (0.55,0.28) {$S\times S$};
+  \foreach \r in {0,1,2,3,4} {
+    \foreach \c in {0,1,2,3,4} {
+      \ifnum\c>\r
+        \fill[attnC!10] (\c*0.20,-\r*0.20) rectangle ++(0.18,-0.18);
+      \else
+        \fill[attnC!75] (\c*0.20,-\r*0.20) rectangle ++(0.18,-0.18);
+      \fi
+      \draw[attnC!35, very thin] (\c*0.20,-\r*0.20) rectangle ++(0.18,-0.18);
+    }
+  }
+  \node[font=\sffamily\tiny, text=attnC] at (0.50,-1.18) {causal mask};
+\end{scope}
+
+% outputs
+\node[card, draw=gpuLine, text width=3.55cm] (hout) at (5.35,-5.55)
+  {last hidden $h(Q)=X^{(L)}_{S,:}$\\[-1pt]
+   {\tiny $\mathbb{R}^{d}$; no $W_{\mathrm{lm}}$ for a cache gate}};
+\node[card, draw=kvC, text width=5.4cm] (kv) at (11.55,-5.55)
+  {KV written to HBM only if decode follows\\[-1pt]
+   {\tiny $K,V\in\mathbb{R}^{L\,\times\,n_{\mathrm{kv}}\,\times\,S\,\times\,d_h}$}};
+
+\draw[->, gpuLine, thick] (layer.south) -- ++(0,-0.18) -| (hout.north);
+\draw[->, kvC, thick] (layer.south) -- ++(0,-0.18) -| (kv.north);
+
+\node[text=mute, font=\sffamily\tiny]
+  at (9.55,-6.85)
+  {All $S$ positions share one load of the model weights. The only cross-token coupling is causal attention.};
+\end{tikzpicture}

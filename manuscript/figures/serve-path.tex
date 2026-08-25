@@ -1,0 +1,44 @@
+\definecolor{okC}{HTML}{1B5E4A}
+\definecolor{waitC}{HTML}{1C4A73}
+\definecolor{noC}{HTML}{8B2E2E}
+\definecolor{softC}{HTML}{5A6270}
+\definecolor{boxbg}{HTML}{F7F8FA}
+
+\begin{tikzpicture}[
+  font=\sffamily\scriptsize,
+  >=Stealth,
+  every node/.style={align=center},
+  snode/.style={draw, rounded corners=1.6pt, fill=boxbg, inner sep=3.6pt, text width=2.48cm, minimum height=0.82cm},
+  leaf/.style={draw, rounded corners=1.6pt, inner sep=3.6pt, text width=2.28cm, minimum height=0.70cm, font=\sffamily\scriptsize},
+]
+
+\node[snode] (norm) at (0,0) {normalize $[Q]$\\$\mathrm{BindClass}(Q,u)$};
+\node[leaf, draw=noC, text=noC] (inelig) at (3.15,1.05) {ineligible:\\generate, no insert};
+\node[leaf, draw=okC, text=okC] (bound) at (3.15,0) {bound: replay $\pi(u)$\\fill $\mathcal{T}$ (or render)};
+\node[snode] (hash) at (3.15,-1.15) {portable: class hash\\+ $\mathrm{CheapGate}$};
+\node[leaf, draw=okC, text=okC] (hit0) at (6.20,-1.15) {\textsc{accept}\\return $C_{[Q]}$};
+\node[snode] (emb) at (0,-2.45) {embed $e(Q)$\\$k$-NN};
+\node[snode] (g1) at (3.15,-2.45) {pool + gate\\in $e$-space};
+\node[leaf, draw=okC, text=okC] (a1) at (6.20,-2.45) {\textsc{accept}\\return $C^\star$};
+\node[leaf, draw=noC, text=noC] (r1) at (9.15,-2.45) {\textsc{reject}\\generate};
+\node[snode] (pf) at (3.15,-3.85) {\textsc{defer}: prefill\\$h(Q)$, KV};
+\node[snode] (g2) at (6.20,-3.85) {pool + gate\\in $h$-space};
+\node[leaf, draw=okC, text=okC] (a2) at (9.15,-3.85) {\textsc{accept}\\return $C^\star$};
+\node[leaf, draw=noC, text=noC] (dn) at (6.20,-5.15) {decode from KV\\draft $C^\star$; insert};
+
+\draw[->, noC] (norm.east) -- ++(0.18,0) |- (inelig.west);
+\draw[->, okC] (norm) -- (bound);
+\draw[->] (norm.south) -- (hash.west);
+\draw[->, okC] (hash) -- (hit0);
+\draw[->] (hash.south) -- ++(0,-0.18) -| (emb.north);
+\draw[->] (emb) -- (g1);
+\draw[->, okC] (g1) -- (a1);
+\draw[->, noC] (g1) -- (r1);
+\draw[->, waitC] (g1.south) -- node[right, font=\sffamily\tiny, text=waitC] {defer} (pf.north);
+\draw[->] (pf) -- (g2);
+\draw[->, okC] (g2) -- (a2);
+\draw[->, noC] (g2.south) -- node[right, font=\sffamily\tiny, text=noC] {reject} (dn.north);
+
+\node[font=\sffamily\tiny, text=softC] at (4.6,-5.85)
+  {Green leaves skip serving-model decode. Bound fill-in may still call tools. Exact class-hash still goes through CheapGate.};
+\end{tikzpicture}
