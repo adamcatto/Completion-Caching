@@ -1,7 +1,7 @@
 \section{Prefill, decode, and a cost model}
 \label{sec:cost}
 
-Completion caching decides whether to return a stored answer before, during, or after the serving model's forward pass. The cost of each option depends on what that pass actually does. This section accounts for the work on a public dense stand-in, Llama~3.1 70B~\citep{grattafiori2024llama}, whose width, depth, and grouped-query layout are published. A frontier Gemini-class model is wider and deeper; the same identities apply, with different $P$, $L$, and $d$.
+Completion caching decides whether to return a stored answer before, during, or after the serving model's forward pass. The cost of each option depends on what that pass does. This section accounts for the work on a public dense stand-in, Llama~3.1 70B~\citep{grattafiori2024llama}, whose width, depth, and grouped-query layout are published. A frontier Gemini-class model is wider and deeper; the same identities apply, with different $P$, $L$, and $d$.
 
 \subsection{Computations on the path to an answer}
 \label{sec:cost-three}
