@@ -4,7 +4,7 @@ This is an experiment in getting AI to drive forward an idea I had into a manusc
 
 I wrote out some ideas around how LLM chat providers could cache key-value pairs (keys are prefill embeddings of prompts, values are completions) 
 to user prompts and retrieve completions based on prompt prefill similarity, perhaps modifying parts of the completion based on 
-dynamical information. The idea is to route certain prompts away from decode loops, since they are much more expensive than prefill;
+dynamical information, and then had an AI agent expand upon them and write up a manuscript. The idea is to route certain prompts away from decode loops, since they are much more expensive than prefill;
 if one can get away with a prefill + embedding lookup + completion retrieval, that would save a lot on FLOPs, latency, and $$.
 
 I think it is most relevant to LLM-powered search providers like Google / Google DeepMind, who probably get many repeat queries.
